@@ -1,0 +1,77 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() { return request.auth != null; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function isOwner(userId) { return request.auth.uid == userId; }
+    function getUserRole() { 
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    function isAdmin() { return isSignedIn() && getUserRole() == 'admin'; }
+    function isEditor() { return isSignedIn() && (getUserRole() == 'editor' || getUserRole() == 'admin'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    // --- Entity Validations ---
+    function isValidDocument(data) {
+      return data.keys().hasAll(['title', 'content', 'version', 'authorId', 'createdAt', 'updatedAt']) &&
+             data.keys().size() == 6 &&
+             data.title is string && data.title.size() <= 200 &&
+             data.content is string && data.content.size() <= 100000 &&
+             data.version is int &&
+             data.authorId == request.auth.uid &&
+             data.createdAt == request.time &&
+             data.updatedAt == request.time;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['content', 'role', 'createdAt']) &&
+             data.keys().size() == 3 &&
+             data.content is string && data.content.size() <= 2000 &&
+             data.role in ['user', 'bot'] &&
+             data.createdAt == request.time;
+    }
+
+    // --- Collection Rules ---
+
+    // 1. Documents
+    match /documents/{docId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(docId) && isValidDocument(incoming());
+      allow update: if isSignedIn() && isValidId(docId);
+      allow delete: if isSignedIn();
+    }
+
+    // 2. Users (Profiles)
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isOwner(userId) && 
+                      incoming().role == 'viewer' && // Default role
+                      incoming().createdAt == request.time;
+      allow update: if isAdmin(); // Only admins can change roles
+      allow delete: if isAdmin();
+    }
+
+    // 3. Analytics
+    match /analytics/{day} {
+      allow read: if isEditor();
+      allow write: if isAdmin(); // Usually updated by a backend/admin
+    }
+
+    // 4. Conversations & Messages
+    match /conversations/{convId} {
+      allow read, write: if isSignedIn();
+      
+      match /messages/{msgId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && isValidId(msgId) && isValidMessage(incoming());
+      }
+    }
+  }
+}

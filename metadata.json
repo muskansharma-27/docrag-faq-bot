@@ -1,0 +1,6 @@
+{
+  "name": "DocRAG FAQ Bot",
+  "description": "A multi-document RAG-based FAQ bot with document management, versioning, analytics, and role-based access control.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

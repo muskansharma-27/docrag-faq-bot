@@ -1,0 +1,70 @@
+{
+  "entities": {
+    "Document": {
+      "title": "Document",
+      "description": "Metadata and content for a document used in RAG.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "version": { "type": "integer" },
+        "authorId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "content", "version", "authorId", "createdAt", "updatedAt"]
+    },
+    "Analytics": {
+      "title": "Analytics",
+      "description": "Daily analytics for bot usage.",
+      "type": "object",
+      "properties": {
+        "totalQueries": { "type": "integer" },
+        "totalUsers": { "type": "integer" },
+        "botAccuracy": { "type": "number" },
+        "date": { "type": "string", "format": "date" }
+      },
+      "required": ["totalQueries", "totalUsers", "botAccuracy", "date"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account details and roles.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "editor", "viewer"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "role", "createdAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A single message in a conversation.",
+      "type": "object",
+      "properties": {
+        "content": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "bot"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["content", "role", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/documents/{documentId}": {
+      "schema": "Document",
+      "description": "Collection of documents available for RAG."
+    },
+    "/analytics/{day}": {
+      "schema": "Analytics",
+      "description": "Daily usage statistics."
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile and role management."
+    },
+    "/conversations/{convId}/messages/{msgId}": {
+      "schema": "Message",
+      "description": "Messages within a conversation sequence."
+    }
+  }
+}
