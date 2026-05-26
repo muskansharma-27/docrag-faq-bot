@@ -13,11 +13,12 @@ import {
   Cell
 } from 'recharts';
 import { AnalyticsData } from '../types';
-import { TrendingUp, Users, MessageCircle, FileCheck } from 'lucide-react';
+import { TrendingUp, Users, MessageCircle, FileCheck, LogOut, ChevronDown } from 'lucide-react';
 
-export default function Dashboard({ user }: { user: User }) {
+export default function Dashboard({ user, onSignOut }: { user: User; onSignOut: () => void }) {
   const [data, setData] = useState<AnalyticsData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [imgError, setImgError] = useState(false);
 
   useEffect(() => {
     fetch('/api/analytics')
@@ -37,9 +38,42 @@ export default function Dashboard({ user }: { user: User }) {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-4xl font-extrabold text-white leading-tight tracking-tight">Welcome back, <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-blue-500">{user.displayName?.split(' ')[0]}</span> 👋</h1>
-        <p className="text-zinc-400 mt-2 text-lg">Here's what's happening with your FAQ Bot today.</p>
+      <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h1 className="text-4xl font-extrabold text-white leading-tight tracking-tight">Welcome back, <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-blue-500">{user.displayName?.split(' ')[0] || 'User'}</span> 👋</h1>
+          <p className="text-zinc-400 mt-2 text-lg">Here's what's happening with your FAQ Bot today.</p>
+        </div>
+
+        <div className="group w-full max-w-sm lg:w-auto">
+          <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-zinc-900/70 p-2 shadow-2xl backdrop-blur-xl transition-all duration-300 hover:border-purple-500/30 hover:bg-zinc-900/90 hover:shadow-[0_0_30px_rgba(168,85,247,0.12)]">
+            {user.photoURL && !imgError ? (
+              <img 
+                src={user.photoURL} 
+                alt="" 
+                className="h-11 w-11 rounded-xl border border-white/10 bg-zinc-800 object-cover" 
+                onError={() => setImgError(true)}
+              />
+            ) : (
+              <div className="h-11 w-11 shrink-0 rounded-xl border border-white/10 bg-zinc-800 flex items-center justify-center text-purple-400 font-bold text-lg">
+                {(user.displayName || user.email || 'U')[0].toUpperCase()}
+              </div>
+            )}
+            <div className="min-w-0 flex-1 pr-2">
+              <p className="truncate text-sm font-bold text-white">{user.displayName || 'User'}</p>
+              <p className="truncate text-xs text-zinc-500">{user.email}</p>
+            </div>
+            <ChevronDown className="hidden h-4 w-4 text-zinc-500 transition-transform duration-300 group-hover:rotate-180 group-hover:text-purple-300 sm:block" />
+            <button
+              onClick={onSignOut}
+              className="flex h-10 items-center justify-center gap-2 rounded-xl border border-red-500/10 bg-red-500/5 px-3 text-red-400 transition-all hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-300"
+              aria-label="Sign out"
+              title="Sign out"
+            >
+              <LogOut className="h-4 w-4" />
+              <span className="hidden text-sm font-semibold sm:inline">Sign Out</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">

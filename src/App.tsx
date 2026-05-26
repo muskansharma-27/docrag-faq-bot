@@ -4,11 +4,10 @@ import { onAuthStateChanged, User, AuthError } from 'firebase/auth';
 import { 
   FileText, 
   MessageSquare, 
-  LogOut, 
   LayoutDashboard,
   ShieldCheck,
-  Menu,
-  X,
+  PanelLeftClose,
+  PanelLeftOpen,
   Mail,
   Lock,
   UserRound,
@@ -26,7 +25,7 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
-  const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -46,7 +45,7 @@ export default function App() {
   }, []);
 
   const clearAuthForm = () => {
-    setName('');
+    setUsername('');
     setEmail('');
     setPassword('');
     setConfirmPassword('');
@@ -101,7 +100,7 @@ export default function App() {
     if (!passwordValue) nextErrors.password = 'Password is required.';
 
     if (authMode === 'signup') {
-      if (!name.trim()) nextErrors.name = 'Full name is required.';
+      if (!username.trim()) nextErrors.username = 'Username is required.';
       const strongPasswordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
       if (!strongPasswordPattern.test(passwordValue)) nextErrors.password = passwordHelpText;
       if (!confirmPassword.trim()) nextErrors.confirmPassword = 'Please confirm your password.';
@@ -119,7 +118,7 @@ export default function App() {
     setIsAuthLoading(true);
     try {
       if (authMode === 'signup') {
-        await registerWithEmail(name, emailValue, passwordValue);
+        await registerWithEmail(username, emailValue, passwordValue);
         toast.success('Account created successfully.');
       } else {
         try {
@@ -175,6 +174,22 @@ export default function App() {
       toast.success('Password reset email sent. Check inbox and spam/promotions folders.');
     } catch (err: unknown) {
       toast.error(getReadableAuthError(err));
+    }
+  };
+
+  const handleGoogleAuth = async () => {
+    if (isAuthLoading) return;
+    setIsAuthLoading(true);
+    try {
+      await loginWithGoogle();
+    } catch (err: unknown) {
+      const errObj = err as Partial<AuthError>;
+      if (errObj?.code === 'auth/popup-closed-by-user' || errObj?.code === 'auth/cancelled-popup-request') {
+        return; // Ignore cancellation errors
+      }
+      toast.error(getReadableAuthError(err));
+    } finally {
+      setIsAuthLoading(false);
     }
   };
 
@@ -238,32 +253,32 @@ export default function App() {
 
           <form onSubmit={handleEmailAuth} className="space-y-3 mb-4">
             {authMode === 'signup' && (
-              <label className={`flex items-center gap-3 w-full bg-white/5 border py-3 px-4 rounded-xl text-white ${fieldErrors.name ? 'border-red-500/60' : 'border-white/10'}`}>
+              <label className={`flex items-center gap-3 w-full bg-white/5 border py-3 px-4 rounded-xl text-white ${fieldErrors.username ? 'border-red-500/60' : 'border-white/10'}`}>
                 <UserRound className="w-4 h-4 text-zinc-400" />
                 <input
                   type="text"
-                  value={name}
+                  value={username}
                   onChange={(e) => {
-                    setName(e.target.value);
-                    setFieldErrors((prev) => ({ ...prev, name: '' }));
+                    setUsername(e.target.value);
+                    setFieldErrors((prev) => ({ ...prev, username: '' }));
                   }}
-                  placeholder="Full name"
+                  placeholder="Username"
                   className="bg-transparent w-full text-sm outline-none placeholder:text-zinc-500"
                 />
               </label>
             )}
-            {fieldErrors.name && authMode === 'signup' && <p className="text-xs text-red-400 -mt-1">{fieldErrors.name}</p>}
+            {fieldErrors.username && authMode === 'signup' && <p className="text-xs text-red-400 -mt-1">{fieldErrors.username}</p>}
 
             <label className={`flex items-center gap-3 w-full bg-white/5 border py-3 px-4 rounded-xl text-white ${fieldErrors.email ? 'border-red-500/60' : 'border-white/10'}`}>
               <Mail className="w-4 h-4 text-zinc-400" />
               <input
-                type="email"
+                type={authMode === 'signin' ? 'text' : 'email'}
                 value={email}
                 onChange={(e) => {
                   setEmail(e.target.value);
                   setFieldErrors((prev) => ({ ...prev, email: '' }));
                 }}
-                placeholder="Email address"
+                placeholder={authMode === 'signin' ? 'Email/Username' : 'Email address'}
                 className="bg-transparent w-full text-sm outline-none placeholder:text-zinc-500"
               />
             </label>
@@ -348,8 +363,9 @@ export default function App() {
           </div>
 
           <button
+            type="button"
             disabled={isAuthLoading}
-            onClick={() => loginWithGoogle().catch(err => toast.error(err.message))}
+            onClick={handleGoogleAuth}
             className="w-full flex items-center justify-center gap-3 bg-white/5 border border-white/10 py-3.5 px-4 rounded-xl hover:bg-white/10 hover:border-white/20 transition-all font-medium text-white shadow-sm hover:shadow-[0_0_20px_rgba(255,255,255,0.05)]"
           >
             <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5" />
@@ -362,9 +378,9 @@ export default function App() {
   }
 
   const tabs = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'documents', label: 'Documents', icon: FileText },
-    { id: 'bot', label: 'FAQ Bot', icon: MessageSquare },
+    { id: 'dashboard', label: 'Dashboard', description: 'Insights overview', icon: LayoutDashboard },
+    { id: 'documents', label: 'Documents', description: 'Knowledge base', icon: FileText },
+    { id: 'bot', label: 'FAQ Bot', description: 'Ask your assistant', icon: MessageSquare },
   ];
 
   return (
@@ -374,32 +390,44 @@ export default function App() {
       {/* Sidebar */}
       <motion.aside
         initial={false}
-        animate={{ width: isSidebarOpen ? 260 : 80 }}
-        className="bg-zinc-900/50 backdrop-blur-xl border-r border-white/5 flex flex-col z-20 relative"
+        animate={{ width: isSidebarOpen ? 280 : 88 }}
+        className="relative z-20 flex flex-col border-r border-white/10 bg-[#0d0d10]/95 shadow-[18px_0_50px_rgba(0,0,0,0.25)] backdrop-blur-xl"
       >
-        <div className="p-4 flex items-center justify-between border-b border-white/5">
+        <div className="flex h-20 items-center justify-between border-b border-white/5 px-4">
           {isSidebarOpen && (
             <div className="flex items-center gap-3">
-              <div className="bg-gradient-to-br from-purple-500 to-blue-600 p-2 rounded-xl shadow-[0_0_15px_rgba(168,85,247,0.3)]">
+              <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-purple-500 to-blue-600 p-2.5 shadow-[0_0_25px_rgba(168,85,247,0.35)]">
                 <ShieldCheck className="w-5 h-5 text-white" />
               </div>
-              <span className="font-bold text-white tracking-wide">DocRAG</span>
+              <div>
+                <span className="block font-bold text-white tracking-wide">DocRAG</span>
+                <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">FAQ Console</span>
+              </div>
             </div>
           )}
           {!isSidebarOpen && (
-             <div className="bg-gradient-to-br from-purple-500 to-blue-600 p-2 rounded-xl mx-auto shadow-[0_0_15px_rgba(168,85,247,0.3)]">
+             <button
+              onClick={() => setIsSidebarOpen(true)}
+              className="mx-auto rounded-2xl border border-white/10 bg-gradient-to-br from-purple-500 to-blue-600 p-2.5 shadow-[0_0_25px_rgba(168,85,247,0.35)] transition-all hover:scale-105 hover:shadow-[0_0_35px_rgba(168,85,247,0.45)]"
+              aria-label="Expand sidebar"
+              title="Expand sidebar"
+            >
               <ShieldCheck className="w-5 h-5 text-white" />
-            </div>
+            </button>
           )}
-          <button 
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="p-1.5 hover:bg-white/10 rounded-lg transition-colors border border-transparent hover:border-white/5"
-          >
-            {isSidebarOpen ? <X className="w-5 h-5 text-zinc-400" /> : <Menu className="w-5 h-5 text-zinc-400" />}
-          </button>
+          {isSidebarOpen && (
+            <button 
+              onClick={() => setIsSidebarOpen(false)}
+              className="rounded-xl border border-white/5 p-2 text-zinc-400 transition-all hover:border-purple-500/30 hover:bg-white/10 hover:text-white"
+              aria-label="Collapse sidebar"
+              title="Collapse sidebar"
+            >
+              <PanelLeftClose className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
-        <nav className="flex-1 p-3 space-y-2 overflow-y-auto">
+        <nav className="flex-1 space-y-3 overflow-y-auto px-3 py-6">
           {tabs.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -407,37 +435,52 @@ export default function App() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-all duration-300 group ${
+                title={!isSidebarOpen ? tab.label : undefined}
+                className={`group relative w-full overflow-hidden rounded-2xl border transition-all duration-300 ${
                   isActive 
-                    ? 'bg-white/10 border border-white/10 text-white shadow-[0_0_20px_rgba(255,255,255,0.05)]' 
-                    : 'text-zinc-400 hover:bg-white/5 hover:text-white border border-transparent'
+                    ? 'border-white/15 bg-white/10 text-white shadow-[0_12px_35px_rgba(0,0,0,0.25)]' 
+                    : 'border-transparent text-zinc-500 hover:border-white/10 hover:bg-white/[0.04] hover:text-white'
                 }`}
               >
-                <Icon className={`flex-shrink-0 transition-colors ${isActive ? 'w-5 h-5 text-purple-400' : 'w-5 h-5 opacity-70 group-hover:text-purple-400'}`} />
-                {isSidebarOpen && <span className="font-medium text-sm">{tab.label}</span>}
+                {isActive && (
+                  <motion.span
+                    layoutId="active-sidebar-tab"
+                    className="absolute inset-y-2 left-0 w-1 rounded-r-full bg-gradient-to-b from-purple-400 to-blue-500"
+                    transition={{ type: 'spring', stiffness: 400, damping: 34 }}
+                  />
+                )}
+                <span className={`relative flex items-center ${isSidebarOpen ? 'gap-3 px-3 py-3' : 'justify-center px-0 py-3.5'}`}>
+                  <span className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border transition-all duration-300 ${
+                    isActive
+                      ? 'border-purple-500/30 bg-purple-500/15 text-purple-300 shadow-[0_0_18px_rgba(168,85,247,0.18)]'
+                      : 'border-white/5 bg-white/[0.03] text-zinc-500 group-hover:border-purple-500/20 group-hover:text-purple-300'
+                  }`}>
+                    <Icon className="w-5 h-5" />
+                  </span>
+                  {isSidebarOpen && (
+                    <span className="min-w-0 text-left">
+                      <span className="block text-sm font-bold">{tab.label}</span>
+                      <span className="mt-0.5 block truncate text-xs font-medium text-zinc-500 group-hover:text-zinc-400">{tab.description}</span>
+                    </span>
+                  )}
+                </span>
               </button>
             );
           })}
         </nav>
 
-        <div className="p-4 border-t border-white/5 bg-zinc-900/30">
-          {isSidebarOpen && (
-            <div className="mb-4 flex items-center gap-3 bg-black/20 p-3 rounded-xl border border-white/5">
-              <img src={user.photoURL || ''} alt="" className="w-9 h-9 rounded-full border border-white/10" />
-              <div className="overflow-hidden">
-                <p className="text-sm font-semibold text-white truncate">{user.displayName}</p>
-                <p className="text-xs text-zinc-500 truncate">{user.email}</p>
+        {isSidebarOpen && (
+          <div className="border-t border-white/5 p-4">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-inner">
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">Workspace</span>
+                <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.85)]" />
               </div>
+              <p className="text-sm font-semibold text-white">Knowledge Assistant</p>
+              <p className="mt-1 text-xs leading-relaxed text-zinc-500">Ready for document search and FAQ responses.</p>
             </div>
-          )}
-          <button 
-            onClick={() => logout()}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-xl transition-all border border-transparent hover:border-red-500/20 ${!isSidebarOpen && 'justify-center'}`}
-          >
-            <LogOut className="w-5 h-5" />
-            {isSidebarOpen && <span className="font-medium text-sm">Sign Out</span>}
-          </button>
-        </div>
+          </div>
+        )}
       </motion.aside>
 
       {/* Main Content */}
@@ -455,7 +498,7 @@ export default function App() {
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.2 }}
               >
-                <Dashboard user={user} />
+                <Dashboard user={user} onSignOut={logout} />
               </motion.div>
             )}
             {activeTab === 'documents' && (

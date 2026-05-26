@@ -16,6 +16,44 @@ type DocumentContext = {
 
 const normalizeText = (value: string) => value.replace(/\s+/g, " ").trim();
 
+const getQuestionTerms = (question: string) => {
+  const stopWords = new Set([
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "i",
+    "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "was",
+    "what", "when", "where", "which", "who", "why", "with", "you", "your",
+  ]);
+
+  return question
+    .toLowerCase()
+    .match(/[a-z0-9]+/g)
+    ?.filter((term) => term.length > 2 && !stopWords.has(term)) || [];
+};
+
+const splitIntoSentences = (content: string) =>
+  normalizeText(content)
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length > 20);
+
+const inferAnswerTitle = (question: string) => {
+  const normalized = question.toLowerCase();
+  if (normalized.includes("leave")) return "Leave Policy";
+  if (normalized.includes("hr")) return "HR Policy";
+  if (normalized.includes("policy")) return "Policy Summary";
+  return "Answer";
+};
+
+const cleanAnswerSentence = (sentence: string, title: string) =>
+  sentence
+    .replace(new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*`, "i"), "")
+    .replace(/^HR Policy Document \(Detailed\)\s*/i, "")
+    .trim();
+
+const highlightImportantTerms = (sentence: string) =>
+  sentence
+    .replace(/\b(\d+\s+(?:annual\s+)?leave\s+days?)\b/gi, "**$1**")
+    .replace(/\b(HR Policy|Leave Policy|Sick leave|Casual leave|Employees|reporting manager|medical documentation|Unused leaves)\b/gi, "**$1**");
+
 const buildDocumentContext = (documents: DocumentContext[] = []) =>
   documents
     .map((document, index) => {
@@ -28,33 +66,53 @@ const buildDocumentContext = (documents: DocumentContext[] = []) =>
     .slice(0, 24000);
 
 const buildExtractiveAnswer = (question: string, documents: DocumentContext[] = []) => {
-  const questionTerms = new Set(
-    question
-      .toLowerCase()
-      .match(/[a-z0-9]+/g)
-      ?.filter((term) => term.length > 2) || []
-  );
+  const questionTerms = getQuestionTerms(question);
 
   const ranked = documents
     .map((document) => {
       const content = normalizeText(document.content || "");
       const haystack = `${document.title || ""} ${content}`.toLowerCase();
-      const score = [...questionTerms].reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
+      const score = questionTerms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
       return { title: document.title || "Uploaded document", content, score };
     })
     .filter((document) => document.content)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
+    .slice(0, 5);
 
   if (ranked.length === 0) {
     return "I could not find readable text in the uploaded documents yet. Re-upload a text-based document, or configure GEMINI_API_KEY for scanned PDFs.";
   }
 
-  const snippets = ranked
-    .map((document) => `**${document.title}**\n${document.content.slice(0, 900)}${document.content.length > 900 ? "..." : ""}`)
-    .join("\n\n");
+  const rankedSentences = ranked
+    .flatMap((document) =>
+      splitIntoSentences(document.content).map((sentence) => {
+        const cleanedSentence = cleanAnswerSentence(sentence, document.title);
+        const haystack = `${document.title} ${cleanedSentence}`.toLowerCase();
+        const score = questionTerms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
+        return { title: document.title, sentence: cleanedSentence, score };
+      })
+    )
+    .filter((item) => item.score > 0 || questionTerms.length === 0)
+    .sort((a, b) => b.score - a.score);
 
-  return `I found these relevant passages in your uploaded documents. Add GEMINI_API_KEY for a more natural synthesized answer.\n\n${snippets}`;
+  const seen = new Set<string>();
+  const bullets = rankedSentences
+    .filter((item) => {
+      const key = item.sentence.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 5);
+
+  if (bullets.length === 0) {
+    return "I could not find a direct answer to that question in the uploaded documents.";
+  }
+
+  const sourceTitles = [...new Set(bullets.map((item) => item.title))].slice(0, 2).join(", ");
+  const bulletText = bullets.map((item) => `- ${highlightImportantTerms(item.sentence)}`).join("\n");
+
+  return `## ${inferAnswerTitle(question)}\n\n**Source:** ${sourceTitles}\n\n${bulletText}\n\n**Note:** I only used the uploaded document content that matched your question.`;
 };
 
 async function startServer() {
@@ -170,6 +228,10 @@ async function startServer() {
 
 Rules:
 - If the answer is present, answer clearly and cite the document title(s).
+- Keep the answer focused only on what the user asked.
+- Use short Markdown sections and bullet points.
+- Highlight important policy names, limits, dates, amounts, and approval requirements in **bold**.
+- Avoid dumping raw passages or repeating the same point.
 - If the context does not contain the answer, say you could not find it in the uploaded documents.
 - Do not invent facts outside the context.
 

@@ -51,6 +51,13 @@ const normalizeExtractedText = (value: string) =>
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
+const toBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = error => reject(error);
+});
+
 const extractPdfTextWithPdfJs = async (file: File) => {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer.slice(0)) }).promise;
@@ -59,9 +66,53 @@ const extractPdfTextWithPdfJs = async (file: File) => {
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-    const pageText = content.items
-      .map((item) => ('str' in item ? (item as PdfTextItem).str || '' : ''))
-      .join(' ');
+    
+    let pageText = '';
+    let lastY = -1;
+    let lastX = -1;
+    let lastWidth = 0;
+
+    for (const item of content.items) {
+      if (!('str' in item)) continue;
+      
+      const textItem = item as any;
+      const str = textItem.str;
+      const x = textItem.transform[4];
+      const y = textItem.transform[5];
+      const width = textItem.width;
+      const height = Math.abs(textItem.transform[3]); 
+      
+      // If Y changes significantly, we are on a new line
+      if (lastY !== -1 && Math.abs(y - lastY) > height * 0.4) {
+        pageText += '\n';
+        lastX = -1; 
+      }
+      
+      // Calculate horizontal gap to preserve spacing
+      if (lastX !== -1) {
+        const gap = x - (lastX + lastWidth);
+        if (gap > 0) {
+          const spaceWidth = height * 0.25; // Approximate width of a space character
+          if (spaceWidth > 0) {
+            const spacesCount = Math.floor(gap / spaceWidth);
+            if (spacesCount > 0) {
+              pageText += ' '.repeat(spacesCount);
+            }
+          }
+        }
+      }
+      
+      pageText += str;
+      lastY = y;
+      lastX = x;
+      lastWidth = width;
+      
+      if (textItem.hasEOL) {
+        pageText += '\n';
+        lastY = -1;
+        lastX = -1;
+      }
+    }
 
     if (pageText.trim()) {
       pages.push(pageText);
@@ -107,6 +158,8 @@ export default function DocumentManager({ user }: { user: User }) {
   const [showEditor, setShowEditor] = useState(false);
   const [editorTitle, setEditorTitle] = useState('');
   const [editorContent, setEditorContent] = useState('');
+  const [editorFileData, setEditorFileData] = useState<string | undefined>(undefined);
+  const [viewMode, setViewMode] = useState<'text' | 'pdf'>('text');
 
   useEffect(() => {
     const q = query(collection(db, 'documents'), orderBy('updatedAt', 'desc'));
@@ -122,7 +175,14 @@ export default function DocumentManager({ user }: { user: User }) {
     for (const file of acceptedFiles) {
       try {
         let text = '';
+        let fileData = undefined;
         if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+          if (file.size < 800 * 1024) { // 800KB limit for base64 storage
+             fileData = await toBase64(file);
+          } else {
+             toast.info(`${file.name} is too large to store the original view, but text extraction will continue.`);
+          }
+          
           text = await extractPdfTextWithPdfJs(file);
 
           if (!text) {
@@ -139,6 +199,7 @@ export default function DocumentManager({ user }: { user: User }) {
         await addDoc(collection(db, 'documents'), {
           title: file.name,
           content: text.slice(0, 100000), // Safety limit
+          fileData: fileData || null,
           version: 1,
           authorId: user.uid,
           createdAt: serverTimestamp(),
@@ -170,6 +231,7 @@ export default function DocumentManager({ user }: { user: User }) {
         await updateDoc(doc(db, 'documents', editingDoc.id), {
           title: editorTitle,
           content: editorContent,
+          fileData: editorFileData || null,
           version: editingDoc.version + 1,
           updatedAt: serverTimestamp(),
         });
@@ -178,6 +240,7 @@ export default function DocumentManager({ user }: { user: User }) {
         await addDoc(collection(db, 'documents'), {
           title: editorTitle,
           content: editorContent,
+          fileData: editorFileData || null,
           version: 1,
           authorId: user.uid,
           createdAt: serverTimestamp(),
@@ -220,6 +283,8 @@ export default function DocumentManager({ user }: { user: User }) {
             setEditingDoc(null);
             setEditorTitle('');
             setEditorContent('');
+            setEditorFileData(undefined);
+            setViewMode('text');
             setShowEditor(true);
           }}
           className="flex items-center gap-2 bg-white/10 border border-white/20 text-white px-5 py-2.5 rounded-xl hover:bg-white/20 transition-all shadow-[0_0_20px_rgba(255,255,255,0.1)] text-sm font-bold tracking-wide"
@@ -281,6 +346,8 @@ export default function DocumentManager({ user }: { user: User }) {
                         setEditingDoc(doc);
                         setEditorTitle(doc.title);
                         setEditorContent(doc.content);
+                        setEditorFileData(doc.fileData);
+                        setViewMode(doc.fileData ? 'pdf' : 'text');
                         setShowEditor(true);
                       }}
                       className="p-2.5 text-zinc-400 hover:text-white hover:bg-white/10 rounded-xl transition-all border border-transparent hover:border-white/10"
@@ -378,13 +445,29 @@ export default function DocumentManager({ user }: { user: User }) {
                   />
                 </div>
                 <div className="flex-1 min-h-0 flex flex-col">
-                  <label className="block text-xs font-bold text-blue-400 uppercase tracking-widest mb-3">Content Body</label>
-                  <textarea 
-                    value={editorContent}
-                    onChange={(e) => setEditorContent(e.target.value)}
-                    placeholder="Start typing your knowledge base content here..."
-                    className="flex-1 w-full p-6 bg-zinc-900/50 rounded-3xl border border-white/5 focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/50 resize-none font-mono text-sm leading-relaxed min-h-[400px] text-zinc-300 placeholder:text-zinc-600 transition-all shadow-inner"
-                  />
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="text-xs font-bold text-blue-400 uppercase tracking-widest">Content Body</label>
+                    {editorFileData && (
+                      <button 
+                        onClick={() => setViewMode(viewMode === 'pdf' ? 'text' : 'pdf')} 
+                        className="text-xs font-bold px-4 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-all shadow-sm"
+                      >
+                        {viewMode === 'pdf' ? 'Edit Extracted Text' : 'View Original PDF'}
+                      </button>
+                    )}
+                  </div>
+                  {viewMode === 'pdf' && editorFileData ? (
+                    <div className="flex-1 w-full bg-zinc-900/50 rounded-3xl border border-white/5 overflow-hidden flex flex-col shadow-inner">
+                       <iframe src={editorFileData} className="w-full flex-1 min-h-[500px]" title={editorTitle} />
+                    </div>
+                  ) : (
+                    <textarea 
+                      value={editorContent}
+                      onChange={(e) => setEditorContent(e.target.value)}
+                      placeholder="Start typing your knowledge base content here..."
+                      className="flex-1 w-full p-6 bg-zinc-900/50 rounded-3xl border border-white/5 focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/50 resize-none font-mono text-sm leading-relaxed min-h-[400px] text-zinc-300 placeholder:text-zinc-600 transition-all shadow-inner"
+                    />
+                  )}
                 </div>
               </div>
 

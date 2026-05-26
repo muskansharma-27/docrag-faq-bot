@@ -16,14 +16,14 @@ service cloud.firestore {
     function isAdmin() { return isSignedIn() && getUserRole() == 'admin'; }
     function isEditor() { return isSignedIn() && (getUserRole() == 'editor' || getUserRole() == 'admin'); }
     function incoming() { return request.resource.data; }
-    function existing() { return resource.data; }
 
     // --- Entity Validations ---
     function isValidDocument(data) {
       return data.keys().hasAll(['title', 'content', 'version', 'authorId', 'createdAt', 'updatedAt']) &&
-             data.keys().size() == 6 &&
+             data.keys().size() <= 7 &&
              data.title is string && data.title.size() <= 200 &&
              data.content is string && data.content.size() <= 100000 &&
+             (!('fileData' in data) || data.fileData == null || (data.fileData is string && data.fileData.size() <= 1500000)) &&
              data.version is int &&
              data.authorId == request.auth.uid &&
              data.createdAt == request.time &&
@@ -33,7 +33,7 @@ service cloud.firestore {
     function isValidMessage(data) {
       return data.keys().hasAll(['content', 'role', 'createdAt']) &&
              data.keys().size() == 3 &&
-             data.content is string && data.content.size() <= 2000 &&
+             data.content is string && data.content.size() <= 30000 &&
              data.role in ['user', 'bot'] &&
              data.createdAt == request.time;
     }
@@ -56,6 +56,17 @@ service cloud.firestore {
                       incoming().createdAt == request.time;
       allow update: if isAdmin(); // Only admins can change roles
       allow delete: if isAdmin();
+
+      match /conversations/{convId} {
+        allow read, write: if isSignedIn() && isOwner(userId) && isValidId(convId);
+
+        match /messages/{msgId} {
+          allow read: if isSignedIn() && isOwner(userId) && isValidId(convId);
+          allow create: if isSignedIn() && isOwner(userId) && isValidId(convId) && isValidId(msgId) && isValidMessage(incoming());
+          allow delete: if isSignedIn() && isOwner(userId) && isValidId(convId) && isValidId(msgId);
+          allow update: if false;
+        }
+      }
     }
 
     // 3. Analytics
@@ -71,6 +82,8 @@ service cloud.firestore {
       match /messages/{msgId} {
         allow read: if isSignedIn();
         allow create: if isSignedIn() && isValidId(msgId) && isValidMessage(incoming());
+        allow delete: if isSignedIn() && isValidId(msgId);
+        allow update: if false;
       }
     }
   }

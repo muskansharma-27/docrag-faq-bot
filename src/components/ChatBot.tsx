@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User } from 'firebase/auth';
 import { db } from '../firebase';
-import { collection, addDoc, query, orderBy, limit, onSnapshot, serverTimestamp, getDocs } from 'firebase/firestore';
+import { collection, addDoc, query, orderBy, limit, onSnapshot, serverTimestamp, getDocs, writeBatch } from 'firebase/firestore';
 import { Message, Document } from '../types';
 import {
   Send,
@@ -72,13 +72,27 @@ const getRelevantDocumentContext = (docs: Document[], question: string) => {
   return bestMatches.length > 0 ? bestMatches : ranked.slice(0, 5);
 };
 
+const isGreeting = (value: string) => {
+  const cleanValue = value.trim().replace(/[.,!?'"]/g, '').toLowerCase();
+  return /^(hi|hello|hey|hlo|hy|hii|hiii|hyee|heyo|hola|greetings|good morning|good afternoon|good evening)(?:\s+(there|bot|assistant|friend))?$/i.test(cleanValue);
+};
+
+const greetingReply = "Hello! 👋 I am your Knowledge Assistant. I can answer questions about the HR policies and product guides. What would you like to know?";
+
 export default function ChatBot({ user }: { user: User }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [showInfo, setShowInfo] = useState(false);
+  const [isClearingChat, setIsClearingChat] = useState(false);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
+    return sessionStorage.getItem(`activeConversationId_${user.uid}`);
+  });
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const messagesPath = activeConversationId
+    ? `users/${user.uid}/conversations/${activeConversationId}/messages`
+    : null;
 
   // Auto-scroll
   useEffect(() => {
@@ -97,12 +111,16 @@ export default function ChatBot({ user }: { user: User }) {
   // Load or create conversation
   useEffect(() => {
     if (!activeConversationId) {
-      setActiveConversationId('conv_' + Math.random().toString(36).substr(2, 9));
+      const newId = 'conv_' + Math.random().toString(36).substr(2, 9);
+      sessionStorage.setItem(`activeConversationId_${user.uid}`, newId);
+      setActiveConversationId(newId);
       return;
     }
 
+    if (!messagesPath) return;
+
     const q = query(
-      collection(db, `conversations/${activeConversationId}/messages`),
+      collection(db, messagesPath),
       orderBy('createdAt', 'asc'),
       limit(50)
     );
@@ -113,11 +131,11 @@ export default function ChatBot({ user }: { user: User }) {
     });
 
     return () => unsubscribe();
-  }, [activeConversationId]);
+  }, [activeConversationId, messagesPath]);
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isTyping || !activeConversationId) return;
+    if (!input.trim() || isTyping || !messagesPath) return;
 
     const userMessageContent = input.trim();
     setInput('');
@@ -125,11 +143,20 @@ export default function ChatBot({ user }: { user: User }) {
 
     try {
       // 1. Log User Message to Firestore
-      await addDoc(collection(db, `conversations/${activeConversationId}/messages`), {
+      await addDoc(collection(db, messagesPath), {
         content: userMessageContent,
         role: 'user',
         createdAt: serverTimestamp(),
       });
+
+      if (isGreeting(userMessageContent)) {
+        await addDoc(collection(db, messagesPath), {
+          content: greetingReply,
+          role: 'bot',
+          createdAt: serverTimestamp(),
+        });
+        return;
+      }
 
       // 2. Pull the latest Knowledge Base text and send the most relevant chunks.
       const docsSnapshot = await getDocs(query(collection(db, 'documents'), orderBy('updatedAt', 'desc')));
@@ -147,16 +174,21 @@ export default function ChatBot({ user }: { user: User }) {
       // 3. Call local proxy to avoid CORS
       const webhookUrl = '/api/chat';
 
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          question: userMessageContent,
-          documents: documentContext,
-        })
-      });
+      let response: Response;
+      try {
+        response = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            question: userMessageContent,
+            documents: documentContext,
+          })
+        });
+      } catch {
+        throw new Error('Could not reach the chat server. Start the app with npm run dev, then try again.');
+      }
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => null);
@@ -167,7 +199,7 @@ export default function ChatBot({ user }: { user: User }) {
       const botReply = data.answer || "I'm sorry, I couldn't generate a response.";
 
       // 4. Log Bot Message to Firestore
-      await addDoc(collection(db, `conversations/${activeConversationId}/messages`), {
+      await addDoc(collection(db, messagesPath), {
         content: botReply,
         role: 'bot',
         createdAt: serverTimestamp(),
@@ -175,9 +207,59 @@ export default function ChatBot({ user }: { user: User }) {
 
     } catch (err: any) {
       console.error(err);
-      toast.error("Error communicating with AI: " + err.message);
+      
+      let errorMessage = err.message || "An unknown error occurred.";
+      try {
+         const jsonMatch = errorMessage.match(/\{.*\}/);
+         if (jsonMatch) {
+           const parsed = JSON.parse(jsonMatch[0]);
+           if (parsed?.error?.message) {
+             errorMessage = parsed.error.message;
+           } else if (parsed?.message) {
+             errorMessage = parsed.message;
+           }
+         }
+      } catch (e) {}
+
+      toast.error("Error communicating with AI: " + errorMessage);
     } finally {
       setIsTyping(false);
+    }
+  };
+
+  const handleClearChat = async () => {
+    if (!messagesPath || isTyping || isClearingChat) return;
+
+    if (messages.length === 0) {
+      toast.info('There are no messages to delete.');
+      return;
+    }
+
+    const shouldDelete = window.confirm('Delete all messages in this chat?');
+    if (!shouldDelete) return;
+
+    setIsClearingChat(true);
+    try {
+      const messagesRef = collection(db, messagesPath);
+      const snapshot = await getDocs(messagesRef);
+      const batches: ReturnType<typeof writeBatch>[] = [];
+
+      snapshot.docs.forEach((messageDoc, index) => {
+        const batchIndex = Math.floor(index / 450);
+        if (!batches[batchIndex]) {
+          batches[batchIndex] = writeBatch(db);
+        }
+        batches[batchIndex].delete(messageDoc.ref);
+      });
+
+      await Promise.all(batches.map((batch) => batch.commit()));
+      setMessages([]);
+      setInput('');
+      toast.success('Chat deleted.');
+    } catch (err: any) {
+      toast.error(`Could not delete chat: ${err.message}`);
+    } finally {
+      setIsClearingChat(false);
     }
   };
 
@@ -202,13 +284,44 @@ export default function ChatBot({ user }: { user: User }) {
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button className="p-2.5 text-zinc-400 hover:text-white hover:bg-white/10 rounded-xl transition-all border border-transparent hover:border-white/10">
+        <div className="relative flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowInfo((prev) => !prev)}
+            className={`p-2.5 rounded-xl transition-all border ${showInfo ? 'text-white bg-white/10 border-white/10' : 'text-zinc-400 hover:text-white hover:bg-white/10 border-transparent hover:border-white/10'}`}
+            aria-label="Show assistant information"
+            aria-expanded={showInfo}
+            title="Assistant information"
+          >
             <Info className="w-5 h-5" />
           </button>
-          <button className="p-2.5 text-zinc-400 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all border border-transparent hover:border-red-500/20">
+          <button
+            type="button"
+            onClick={handleClearChat}
+            disabled={messages.length === 0 || isTyping || isClearingChat}
+            className="p-2.5 text-zinc-400 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all border border-transparent hover:border-red-500/20 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-zinc-400 disabled:hover:border-transparent"
+            aria-label="Delete chat"
+            title="Delete chat"
+          >
             <Trash2 className="w-5 h-5" />
           </button>
+
+          <AnimatePresence>
+            {showInfo && (
+              <motion.div
+                initial={{ opacity: 0, y: -6, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -6, scale: 0.98 }}
+                transition={{ duration: 0.16 }}
+                className="absolute right-0 top-12 z-30 w-72 rounded-2xl border border-white/10 bg-zinc-950/95 p-4 text-sm text-zinc-300 shadow-2xl backdrop-blur-xl"
+              >
+                <p className="font-bold text-white">Knowledge Assistant</p>
+                <p className="mt-2 text-xs leading-relaxed text-zinc-400">
+                  Answers are generated from the latest uploaded Knowledge Base documents. The delete button clears this chat history only.
+                </p>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
 

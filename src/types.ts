@@ -2,6 +2,7 @@ export interface Document {
   id: string;
   title: string;
   content: string;
+  fileData?: string;
   version: number;
   authorId: string;
   createdAt: any;
